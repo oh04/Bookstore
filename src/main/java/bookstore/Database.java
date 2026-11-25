@@ -6,6 +6,11 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Locale;
+import java.util.HexFormat;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
 
 final class Database {
     Connection connect() throws SQLException {
@@ -13,21 +18,38 @@ final class Database {
         return DriverManager.getConnection(url, "root", "");
     }
 
-    boolean login(String email, String password) throws SQLException {
-        String sql = "SELECT Email, Password FROM Customers";
+    int login(String email, char[] password) throws SQLException {
+        String sql = "SELECT CustomerID, Email, Password FROM Customers";
         try (
                 Connection connection = connect();
                 Statement statement = connection.createStatement();
                 ResultSet rows = statement.executeQuery(sql)) {
             while (rows.next()) {
                 if (email.trim().equals(rows.getString("Email"))
-                        && password.equals(rows.getString("Password"))) {
-                    return true;
+                        && matches(password, rows.getString("Password"))) {
+                    return rows.getInt("CustomerID");
                 }
             }
         }
-        return false;
+        return 0;
 
+    }
+
+    // Stored password: random salt and PBKDF2 hash, both written as hex.
+    static boolean matches(char[] password, String stored) throws SQLException {
+        if (stored == null || !stored.matches("[0-9a-f]{32}:[0-9a-f]{64}")) return false;
+        HexFormat hex = HexFormat.of();
+        String[] parts = stored.split(":");
+        PBEKeySpec spec = new PBEKeySpec(password, hex.parseHex(parts[0]), 600_000, 256);
+        try {
+            byte[] hash = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+                    .generateSecret(spec).getEncoded();
+            return MessageDigest.isEqual(hash, hex.parseHex(parts[1]));
+        } catch (GeneralSecurityException e) {
+            throw new SQLException("Password verification unavailable.", e);
+        } finally {
+            spec.clearPassword();
+        }
     }
 
     String search(String keyword) throws SQLException {
